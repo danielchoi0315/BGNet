@@ -61,6 +61,8 @@ def main() -> None:
 
     bundles_dst = output_dir / "checkpoint_bundles"
     bundle_paths = []
+    if bundles_dst.exists():
+        shutil.rmtree(bundles_dst)
     for raw_bundle in args.bundle_dir:
         src = Path(raw_bundle).resolve()
         if not src.exists():
