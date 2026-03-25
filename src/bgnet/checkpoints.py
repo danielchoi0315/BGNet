@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+import hashlib
 import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
+from typing import Any
+import urllib.request
+import zipfile
 
 import torch
 from safetensors.torch import load_file, save_file
@@ -27,6 +33,13 @@ def available_checkpoints() -> dict[str, Any]:
     return json.loads(text)
 
 
+def checkpoint_cache_dir() -> Path:
+    root = os.environ.get("BGNET_HOME")
+    if root:
+        return Path(root).expanduser().resolve() / "checkpoints"
+    return Path.home() / ".cache" / "bgnet" / "checkpoints"
+
+
 def _resolve_ref(ref: str | Path) -> Path:
     path = Path(ref)
     if path.exists():
@@ -37,9 +50,7 @@ def _resolve_ref(ref: str | Path) -> Path:
         local = entry.get("local_path")
         if local and Path(local).exists():
             return Path(local)
-        raise FileNotFoundError(
-            f"Checkpoint '{ref}' is registered but no local artifact is configured yet."
-        )
+        return download_pretrained(str(ref))
     raise FileNotFoundError(f"Unknown checkpoint ref: {ref}")
 
 
@@ -101,6 +112,24 @@ def save_pretrained_bundle(
     return root
 
 
+def download_pretrained(ref: str, *, force: bool = False) -> Path:
+    registry = available_checkpoints()
+    if ref not in registry:
+        raise FileNotFoundError(f"Unknown checkpoint ref: {ref}")
+    entry = registry[ref]
+    cache_root = checkpoint_cache_dir() / ref
+    if not force and _bundle_complete(cache_root):
+        return cache_root
+    if "hf_repo_id" in entry:
+        return _download_from_huggingface(ref, entry, cache_root, force=force)
+    if "url" in entry:
+        return _download_from_url(ref, entry, cache_root, force=force)
+    local = entry.get("local_path")
+    if local and Path(local).exists():
+        return Path(local)
+    raise FileNotFoundError(f"Checkpoint '{ref}' has no resolvable local_path, url, or hf_repo_id.")
+
+
 def convert_research_checkpoint(
     checkpoint_path: str | Path,
     output_dir: str | Path,
@@ -109,6 +138,11 @@ def convert_research_checkpoint(
 ) -> Path:
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     if isinstance(ckpt, dict):
+        if "mil_head_state" in ckpt:
+            raise ValueError(
+                "This checkpoint appears to be a record-level MIL checkpoint with a separate mil_head_state. "
+                "BGNet public bundles currently support encoder/window checkpoints only."
+            )
         for key in ("model_state", "encoder_state", "state_dict"):
             maybe = ckpt.get(key)
             if isinstance(maybe, dict) and maybe:
@@ -131,7 +165,7 @@ def convert_research_checkpoint(
         json.dumps(
             {
                 "converted_from": str(checkpoint_path),
-                "format": "research-best-model",
+                "format": "research-encoder-checkpoint",
                 "structural_signature": structural_signature(config),
             },
             indent=2,
@@ -139,3 +173,84 @@ def convert_research_checkpoint(
         encoding="utf-8",
     )
     return root
+
+
+def _bundle_complete(path: Path) -> bool:
+    required = (CONFIG_NAME, WEIGHTS_NAME, METADATA_NAME, CHANNELS_NAME)
+    return all((path / name).exists() for name in required)
+
+
+def _download_from_huggingface(ref: str, entry: dict[str, Any], cache_root: Path, *, force: bool) -> Path:
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise ImportError(
+            f"Checkpoint '{ref}' requires huggingface_hub. Install with `pip install bgnet-eeg[hub]`."
+        ) from exc
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    repo_id = str(entry["hf_repo_id"])
+    revision = entry.get("revision")
+    for filename in (CONFIG_NAME, WEIGHTS_NAME, METADATA_NAME, CHANNELS_NAME):
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+            local_dir=cache_root,
+            force_download=force,
+            local_dir_use_symlinks=False,
+        )
+    return cache_root
+
+
+def _download_from_url(ref: str, entry: dict[str, Any], cache_root: Path, *, force: bool) -> Path:
+    url = str(entry["url"])
+    archive_name = entry.get("archive_name") or Path(url).name or f"{ref}.zip"
+    cache_root.parent.mkdir(parents=True, exist_ok=True)
+    archive_path = cache_root.parent / archive_name
+    if force or not archive_path.exists():
+        with urllib.request.urlopen(url) as response, archive_path.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+    expected_sha256 = entry.get("sha256")
+    if expected_sha256 is not None:
+        actual = _sha256_file(archive_path)
+        if actual != expected_sha256:
+            raise ValueError(f"Checkpoint archive hash mismatch for '{ref}': expected {expected_sha256}, got {actual}")
+    if force and cache_root.exists():
+        shutil.rmtree(cache_root)
+    _extract_bundle_archive(archive_path, cache_root)
+    return cache_root
+
+
+def _extract_bundle_archive(archive_path: Path, cache_root: Path) -> None:
+    cache_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="bgnet_bundle_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        with zipfile.ZipFile(archive_path) as zf:
+            zf.extractall(tmp_path)
+        extracted_root = _single_directory_or_self(tmp_path)
+        for item in extracted_root.iterdir():
+            destination = cache_root / item.name
+            if destination.exists():
+                if destination.is_dir():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
+            shutil.move(str(item), str(destination))
+    if not _bundle_complete(cache_root):
+        raise ValueError(f"Downloaded archive {archive_path} did not contain a valid BGNet bundle.")
+
+
+def _single_directory_or_self(path: Path) -> Path:
+    items = list(path.iterdir())
+    if len(items) == 1 and items[0].is_dir():
+        return items[0]
+    return path
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

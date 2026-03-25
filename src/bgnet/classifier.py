@@ -8,7 +8,6 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from .config import BGNetConfig
 from .model import BGNet
 from .runtime import resolve_input_array
 
@@ -128,4 +127,3 @@ class BGNetClassifier:
 
     def save_pretrained(self, path, *, metadata: dict[str, Any] | None = None):
         return self.model.save_pretrained(path, metadata=metadata)
-

@@ -7,9 +7,7 @@ build/
 __pycache__/
 *.pyc
 .venv/
-.tmp_cli_smoke/
-.tmp_release_audit_venv/
-.tmp_smoke_venv/
+.tmp_*/
 .env
 .coverage
 htmlcov/

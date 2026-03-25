@@ -62,8 +62,10 @@ dev = [
 ]
 
 [project.scripts]
+bgnet-download = "bgnet.cli:download_main"
 bgnet-env-check = "bgnet.cli:env_check_main"
 bgnet-predict = "bgnet.cli:predict_main"
+bgnet-predict-raw = "bgnet.cli:predict_raw_main"
 
 [project.urls]
 Homepage = "https://github.com/danielchoi0315/BGNet"

@@ -23,16 +23,21 @@ The public package keeps the original model math intact, but strips away the res
 
 ## Install
 
+Install directly from GitHub today:
+
 ```bash
-pip install bgnet-eeg
+pip install git+https://github.com/danielchoi0315/BGNet.git
 ```
+
+The repo is already packaged for PyPI release, but the first public wheel has not been
+published to PyPI yet.
 
 Optional extras:
 
 ```bash
-pip install "bgnet-eeg[train]"
-pip install "bgnet-eeg[braindecode]"
-pip install "bgnet-eeg[dev]"
+pip install "bgnet-eeg[train] @ git+https://github.com/danielchoi0315/BGNet.git"
+pip install "bgnet-eeg[braindecode] @ git+https://github.com/danielchoi0315/BGNet.git"
+pip install "bgnet-eeg[dev] @ git+https://github.com/danielchoi0315/BGNet.git"
 ```
 
 ## Quickstart
@@ -58,6 +63,24 @@ model = BGNet.from_preset(
 probs = model.predict_proba(x)
 pred = model.predict(x)
 print(pred, probs)
+```
+
+## Clinical Raw Inference
+
+```python
+import mne
+from bgnet import BGNet
+
+model = BGNet.from_pretrained("./checkpoint_dir")
+raw = mne.io.read_raw_edf("sample.edf", preload=True)
+
+result = model.predict_raw_full(
+    raw,
+    window_seconds=10.0,
+    stride_seconds=5.0,
+    aggregation="mean",
+)
+print(result.prediction, result.probabilities)
 ```
 
 ## Fine-Tuning
@@ -106,7 +129,7 @@ Use `EEGNet` when:
 
 ## Research Checkpoints
 
-BGNet can convert research checkpoints into a public checkpoint directory:
+BGNet can convert research **window / encoder** checkpoints into a public checkpoint directory:
 
 ```python
 from bgnet import BGNetConfig, convert_research_checkpoint
@@ -119,6 +142,9 @@ config = BGNetConfig.from_preset(
 )
 convert_research_checkpoint("best_model.pt", "./bgnet-tuab", config=config)
 ```
+
+Record-level MIL checkpoints with a separate `mil_head_state` are intentionally rejected by the
+public converter so the package does not silently produce incomplete clinical bundles.
 
 ## Scope
 
@@ -133,7 +159,7 @@ This repository is intentionally small. It ships:
 ## Limitations
 
 - The first public release supports frozen `standard_1005` geometry only.
-- Pretrained registry entries are not populated yet; `from_pretrained(...)` currently targets local checkpoint bundles.
+- Pretrained registry support is implemented, but the first public named checkpoints have not been published yet.
 - The public package does not include the full clinical benchmark orchestration stack.
 
 It does not ship:

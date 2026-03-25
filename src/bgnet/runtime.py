@@ -36,15 +36,27 @@ def _cached_layout(ch_names: tuple[str, ...], montage_name: str) -> tuple[np.nda
     return pos_np, mask_np
 
 
-def reorder_channels(x: Tensor, input_ch_names: Sequence[str], target_ch_names: Sequence[str]) -> Tensor:
+def reorder_channels(
+    x: Tensor,
+    input_ch_names: Sequence[str],
+    target_ch_names: Sequence[str],
+    *,
+    on_missing: str = "zero",
+) -> Tensor:
     input_names = canonical_channel_list(input_ch_names)
     target_names = canonical_channel_list(target_ch_names)
+    if on_missing not in {"zero", "error"}:
+        raise ValueError(f"Unsupported on_missing mode: {on_missing}")
     index = {name: i for i, name in enumerate(input_names)}
     missing = [name for name in target_names if name not in index]
-    if missing:
+    if missing and on_missing == "error":
         raise ValueError(f"Missing required channels: {missing}")
-    order = [index[name] for name in target_names]
-    return x[:, order, :]
+    out = x.new_zeros((x.shape[0], len(target_names), x.shape[-1]))
+    for j, name in enumerate(target_names):
+        src = index.get(name)
+        if src is not None:
+            out[:, j, :] = x[:, src, :]
+    return out
 
 
 def resolve_input_array(
@@ -52,11 +64,12 @@ def resolve_input_array(
     *,
     config: BGNetConfig,
     ch_names: Sequence[str] | None = None,
+    on_missing: str = "zero",
 ) -> Tensor:
     if hasattr(raw_or_x, "get_data") and hasattr(raw_or_x, "ch_names"):
         x = ensure_bct(raw_or_x.get_data())
         raw_ch_names = list(raw_or_x.ch_names)
-        return reorder_channels(x, raw_ch_names, config.ch_names)
+        return reorder_channels(x, raw_ch_names, config.ch_names, on_missing=on_missing)
 
     x = ensure_bct(raw_or_x)
     if ch_names is None:
@@ -66,7 +79,7 @@ def resolve_input_array(
                 "Provide ch_names to reorder explicitly."
             )
         return x
-    return reorder_channels(x, ch_names, config.ch_names)
+    return reorder_channels(x, ch_names, config.ch_names, on_missing=on_missing)
 
 
 def sensor_geometry_tensors(

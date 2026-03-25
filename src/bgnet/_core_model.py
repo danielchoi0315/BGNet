@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 from torch import Tensor, nn
-import torch.nn.functional as F
 
 
 class GradientReversalFunction(torch.autograd.Function):
