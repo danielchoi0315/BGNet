@@ -1,0 +1,10 @@
+{
+  "bgnet/tdbrain-window-v1": {
+    "hf_repo_id": "danielchoi0315/bgnet-tdbrain-window-v1",
+    "revision": "main"
+  },
+  "bgnet/tuab-abnormal-mil-v1": {
+    "hf_repo_id": "danielchoi0315/bgnet-tuab-abnormal-mil-v1",
+    "revision": "main"
+  }
+}

@@ -27,4 +27,7 @@ Registry-backed checkpoints can resolve from:
 
 Window / encoder checkpoints from the research repo can be converted with
 `convert_research_checkpoint(...)`. Record-level MIL checkpoints are intentionally not accepted by
-the public converter because they require an extra head bundle beyond the core BGNet encoder.
+that converter because they require an extra head bundle beyond the core BGNet encoder.
+
+For clinical record-level checkpoints, use `convert_research_mil_checkpoint(...)` and
+`BGNetMILModel.from_pretrained(...)`.

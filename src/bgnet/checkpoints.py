@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, Mapping, Sequence
 import urllib.request
 import zipfile
 
@@ -20,6 +20,11 @@ WEIGHTS_NAME = "model.safetensors"
 METADATA_NAME = "metadata.json"
 CHANNELS_NAME = "channels.json"
 REGISTRY_NAME = "checkpoints.json"
+MIL_ENCODER_NAME = "encoder.safetensors"
+MIL_HEAD_NAME = "mil_head.safetensors"
+MIL_METADATA_NAME = "mil_metadata.json"
+LABEL_MAP_NAME = "label_map.json"
+SPLIT_MANIFEST_NAME = "split_manifest.json"
 
 
 def _registry_path() -> Path:
@@ -112,6 +117,31 @@ def save_pretrained_bundle(
     return root
 
 
+def normalize_label_map(label_map: Mapping[str, int] | Sequence[str] | None) -> dict[str, int]:
+    if label_map is None:
+        return {}
+    if isinstance(label_map, Mapping):
+        normalized = {str(name): int(idx) for name, idx in label_map.items()}
+    else:
+        normalized = {str(name): int(idx) for idx, name in enumerate(label_map)}
+    return dict(sorted(normalized.items(), key=lambda item: item[1]))
+
+
+def load_mil_pretrained_bundle(
+    ref: str | Path,
+) -> tuple[BGNetConfig, dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, Any], dict[str, int]]:
+    root = _resolve_ref(ref)
+    config = BGNetConfig.from_dict(json.loads((root / CONFIG_NAME).read_text(encoding="utf-8")))
+    encoder_state = load_file(root / MIL_ENCODER_NAME)
+    mil_state = load_file(root / MIL_HEAD_NAME)
+    metadata = json.loads((root / MIL_METADATA_NAME).read_text(encoding="utf-8"))
+    label_map = normalize_label_map(json.loads((root / LABEL_MAP_NAME).read_text(encoding="utf-8")))
+    expected = metadata.get("structural_signature")
+    if expected is not None and expected != structural_signature(config):
+        raise ValueError("MIL checkpoint metadata structural signature does not match config.json.")
+    return config, encoder_state, mil_state, metadata, label_map
+
+
 def download_pretrained(ref: str, *, force: bool = False) -> Path:
     registry = available_checkpoints()
     if ref not in registry:
@@ -158,7 +188,14 @@ def convert_research_checkpoint(
 
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    save_file(state_dict, root / WEIGHTS_NAME)
+    from .model import BGNet
+    model = BGNet.from_config(config)
+    model.core.load_state_dict(state_dict, strict=True)
+    wrapped_state = {
+        key: value.detach().cpu().clone().contiguous()
+        for key, value in model.state_dict().items()
+    }
+    save_file(wrapped_state, root / WEIGHTS_NAME)
     (root / CONFIG_NAME).write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
     (root / CHANNELS_NAME).write_text(json.dumps(list(config.ch_names), indent=2), encoding="utf-8")
     (root / METADATA_NAME).write_text(
@@ -175,9 +212,100 @@ def convert_research_checkpoint(
     return root
 
 
+def save_mil_pretrained_bundle(
+    path: str | Path,
+    *,
+    encoder,
+    mil_head,
+    config: BGNetConfig,
+    metadata: Mapping[str, Any] | None = None,
+    label_map: Mapping[str, int] | Sequence[str] | None = None,
+    split_manifest_path: str | Path | None = None,
+) -> Path:
+    root = Path(path)
+    root.mkdir(parents=True, exist_ok=True)
+    encoder_state = {
+        key: value.detach().cpu().clone().contiguous()
+        for key, value in encoder.state_dict().items()
+    }
+    mil_head_state = {
+        key: value.detach().cpu().clone().contiguous()
+        for key, value in mil_head.state_dict().items()
+    }
+    save_file(encoder_state, root / MIL_ENCODER_NAME)
+    save_file(mil_head_state, root / MIL_HEAD_NAME)
+    (root / CONFIG_NAME).write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
+    (root / CHANNELS_NAME).write_text(json.dumps(list(config.ch_names), indent=2), encoding="utf-8")
+    normalized_label_map = normalize_label_map(label_map)
+    (root / LABEL_MAP_NAME).write_text(json.dumps(normalized_label_map, indent=2), encoding="utf-8")
+    payload = dict(metadata or {})
+    payload["structural_signature"] = structural_signature(config)
+    payload["mil_head_type"] = "attention"
+    payload["mil_dropout"] = float(payload.get("mil_dropout", config.dropout))
+    (root / MIL_METADATA_NAME).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if split_manifest_path is not None:
+        manifest_path = Path(split_manifest_path).resolve()
+        shutil.copy2(manifest_path, root / SPLIT_MANIFEST_NAME)
+    return root
+
+
+def convert_research_mil_checkpoint(
+    checkpoint_path: str | Path,
+    output_dir: str | Path,
+    *,
+    config: BGNetConfig,
+    label_map: Mapping[str, int] | Sequence[str] | None = None,
+    mil_dropout: float | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    split_manifest_path: str | Path | None = None,
+) -> Path:
+    from .mil import BGNetMILHead
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(ckpt, dict):
+        raise ValueError("Unsupported MIL checkpoint format.")
+    encoder_state = ckpt.get("encoder_state")
+    mil_head_state = ckpt.get("mil_head_state")
+    if not isinstance(encoder_state, dict) or not encoder_state:
+        raise ValueError("MIL checkpoint is missing encoder_state.")
+    if not isinstance(mil_head_state, dict) or not mil_head_state:
+        raise ValueError("MIL checkpoint is missing mil_head_state.")
+
+    from .model import BGNet
+    encoder_model = BGNet.from_config(config)
+    encoder_model.core.load_state_dict(encoder_state, strict=True)
+    mil_head = BGNetMILHead(
+        d_model=int(config.d_model),
+        n_classes=int(config.n_outputs),
+        dropout=float(config.dropout if mil_dropout is None else mil_dropout),
+    )
+    mil_head.load_state_dict(mil_head_state, strict=True)
+
+    payload = dict(metadata or {})
+    payload.setdefault("converted_from", str(checkpoint_path))
+    payload.setdefault("format", "research-mil-checkpoint")
+    payload.setdefault("mil_dropout", float(config.dropout if mil_dropout is None else mil_dropout))
+    if "epoch" in ckpt:
+        payload["epoch"] = int(ckpt["epoch"])
+    if "val_metrics" in ckpt:
+        payload["val_metrics"] = ckpt["val_metrics"]
+    if "train_metrics" in ckpt:
+        payload["train_metrics"] = ckpt["train_metrics"]
+    return save_mil_pretrained_bundle(
+        output_dir,
+        encoder=encoder_model,
+        mil_head=mil_head,
+        config=config,
+        metadata=payload,
+        label_map=label_map,
+        split_manifest_path=split_manifest_path,
+    )
+
+
 def _bundle_complete(path: Path) -> bool:
-    required = (CONFIG_NAME, WEIGHTS_NAME, METADATA_NAME, CHANNELS_NAME)
-    return all((path / name).exists() for name in required)
+    encoder_required = (CONFIG_NAME, WEIGHTS_NAME, METADATA_NAME, CHANNELS_NAME)
+    mil_required = (CONFIG_NAME, MIL_ENCODER_NAME, MIL_HEAD_NAME, MIL_METADATA_NAME, LABEL_MAP_NAME, CHANNELS_NAME)
+    return all((path / name).exists() for name in encoder_required) or all((path / name).exists() for name in mil_required)
 
 
 def _download_from_huggingface(ref: str, entry: dict[str, Any], cache_root: Path, *, force: bool) -> Path:

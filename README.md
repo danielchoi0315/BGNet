@@ -7,6 +7,7 @@ users a simpler surface:
 
 - `BGNet.from_preset(...)`
 - `BGNet.from_pretrained(...)`
+- `BGNetMILModel.from_pretrained(...)`
 - `predict(...)`
 - `predict_proba(...)`
 - `save_pretrained(...)`
@@ -146,6 +147,34 @@ convert_research_checkpoint("best_model.pt", "./bgnet-tuab", config=config)
 Record-level MIL checkpoints with a separate `mil_head_state` are intentionally rejected by the
 public converter so the package does not silently produce incomplete clinical bundles.
 
+Clinical MIL checkpoints now have a dedicated public path:
+
+```python
+from bgnet import BGNetConfig, convert_research_mil_checkpoint
+
+config = BGNetConfig.from_preset(
+    "clinical",
+    n_outputs=2,
+    ch_names=ch_names,
+    sfreq=256,
+)
+
+convert_research_mil_checkpoint(
+    "best_model.pt",
+    "./bgnet-tuab-mil",
+    config=config,
+    label_map={"normal": 0, "abnormal": 1},
+)
+```
+
+Then load with:
+
+```python
+from bgnet import BGNetMILModel
+
+model = BGNetMILModel.from_pretrained("./bgnet-tuab-mil")
+```
+
 ## Scope
 
 This repository is intentionally small. It ships:
@@ -173,6 +202,7 @@ It does not ship:
 
 - [Quickstart](docs/quickstart.md)
 - [Pretrained Checkpoints](docs/pretrained.md)
+- [MIL Clinical Bundles](docs/mil.md)
 - [Fine-Tuning](docs/fine_tuning.md)
 - [Braindecode Integration](docs/braindecode.md)
 - [Reproducing Paper Results](docs/reproduce_paper.md)
