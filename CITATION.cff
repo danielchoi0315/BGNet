@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+title: BGNet
+message: If you use BGNet, please cite the associated paper and this software repository.
+type: software
+authors:
+  - family-names: Choi
+    given-names: Daniel
+repository-code: https://github.com/danielchoi0315/BGNet
+license: MIT
+version: 0.1.0
+
